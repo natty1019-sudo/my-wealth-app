@@ -1,37 +1,29 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import re
 
 # --- 設定頁面 ---
-st.set_page_config(page_title="資產負債與提領儀表板", layout="wide", page_icon="📈")
+st.set_page_config(page_title="資產負債與現金流儀表板", layout="wide", page_icon="🏦")
 
 # ==========================================
-# 1. 資料處理核心 (專門解析您的表格格式)
+# 1. 資料處理核心 (升級版：增加讀取「股數」)
 # ==========================================
 def parse_my_data(raw_data):
     """
-    將混合格式的清單轉換為乾淨的 DataFrame
-    raw_data: list of lists (模擬 Google Sheets get_all_values 的輸出)
+    解析您的資料格式，並嘗試讀取股數以便計算股息
     """
     assets = []
     liabilities = []
     
-    section = "asset" # 預設從資產開始讀
+    section = "asset"
     
     for row in raw_data:
-        # 防呆：確保 row 長度足夠，不足補空字串
-        row = row + [''] * (4 - len(row))
-        
+        # 補齊欄位長度
+        row = row + [''] * (5 - len(row))
         item_name = str(row[0]).strip()
         
         # --- 判斷區塊切換 ---
-        if "負債" in item_name and "合計" not in item_name:
-             # 遇到負債標題行 (不含合計行)，切換模式
-             # 但您的資料是直接接著項目，所以我們用關鍵字判斷項目內容更準
-             pass
-
         if "資產合計" in item_name or "美金匯率" in item_name:
             section = "switch_to_liability_soon"
             continue
@@ -39,27 +31,27 @@ def parse_my_data(raw_data):
         if section == "switch_to_liability_soon" and ("房貸" in item_name or "信貸" in item_name or "借款" in item_name):
             section = "liability"
 
-        # --- 略過無效行 ---
-        if not item_name or item_name in ["項目", ""]:
-            continue
-        if "合計" in item_name or "淨值" in item_name:
-            continue
+        if not item_name or item_name in ["項目", ""]: continue
+        if "合計" in item_name or "淨值" in item_name: continue
 
-        # --- 資料清洗與分類 ---
+        # --- 數值清理 ---
+        def clean_num(x):
+            if isinstance(x, (int, float)): return x
+            x_str = str(x).replace(',', '').replace('NT$', '').replace('%', '').strip()
+            return float(x_str) if x_str else 0
+
         try:
-            # 移除千分位逗號
-            def clean_num(x):
-                if isinstance(x, (int, float)): return x
-                return float(str(x).replace(',', '').replace('NT$', '').replace('%', '').strip()) if x else 0
-
             # 邏輯 A: 資產區塊
             if section == "asset":
-                # 資產金額通常在第 4 欄 (index 3)，但有些現金只有總額可能在其他位置
-                # 您的資料：股票在 col 3 (總金額), 現金在 col 3
-                amount = clean_num(row[3]) 
+                # 金額通常在第 4 欄 (Index 3)
+                amount = clean_num(row[3])
+                # 股數通常在第 2 欄 (Index 1)，如果是現金則為 0
+                shares = clean_num(row[1]) if row[1] else 0
                 
-                # 若第4欄沒數字，嘗試找第2或3欄 (針對某些現金行)
-                if amount == 0 and clean_num(row[1]) > 10000: amount = clean_num(row[1])
+                # 若金額抓不到，嘗試抓第 2 欄 (針對某些只填一欄的現金)
+                if amount == 0 and shares > 10000 and "現金" in item_name: 
+                    amount = shares
+                    shares = 0
                 
                 # 自動分類
                 category = "其他"
@@ -67,14 +59,22 @@ def parse_my_data(raw_data):
                 elif "美股" in item_name or "VT" in item_name or "VOO" in item_name or "TSLA" in item_name: category = "美股"
                 elif "鴻海" in item_name or "0050" in item_name or "台股" in item_name: category = "台股"
                 
-                assets.append({"類別": category, "項目": item_name, "金額": amount, "性質": "資產"})
+                # 特別標記：抵利型 (備援現金)
+                is_buffer = "抵利型" in item_name
+
+                assets.append({
+                    "類別": category, 
+                    "項目": item_name, 
+                    "金額": amount, 
+                    "股數": shares,
+                    "備援": is_buffer
+                })
 
             # 邏輯 B: 負債區塊
             elif section == "liability":
-                # 負債金額在第 2 欄 (index 1)
                 amount = clean_num(row[1])
-                if amount > 0: # 確保讀到數字
-                    liabilities.append({"類別": "負債", "項目": item_name, "金額": -amount, "性質": "負債"})
+                if amount > 0:
+                    liabilities.append({"類別": "負債", "項目": item_name, "金額": -amount, "股數": 0, "備援": False})
 
         except ValueError:
             continue
@@ -82,154 +82,138 @@ def parse_my_data(raw_data):
     return pd.DataFrame(assets + liabilities)
 
 # ==========================================
-# 2. 模擬數據 (或切換為 Google Sheets)
+# 2. 模擬數據 (若已連線 Google Sheets，請換回 API)
 # ==========================================
-# 這裡我把您提供的資料直接寫成 List，方便直接展示
+# 為了展示，這裡包含您新的抵利型帳戶與鴻海股數
 raw_data_paste = [
     ["鴻海股票（質押中）", "142000", "229.5", "32,589,000"],
     ["鴻海股票（可動用）", "80000", "229.5", "18,360,000"],
     ["0050 ETF單筆投資", "20,000", "61.95", "1,239,000"],
-    ["0050 ETF定期定額", "907", "61.95", "56,189"],
     ["美股_VT", "70", "140.22", "307,232"],
-    ["美股_TSLA", "17", "426.58", "226,990"],
-    ["美股_VOO", "70", "624.95", "1,369,309"],
-    ["美股_GOOGL", "2", "319.95", "20,030"],
-    ["美股定期定額_SPY", "3.28", "679.68", "69,967"],
-    ["現金_e財庫", "", "", "274,086"],
     ["現金_凱基銀行", "", "", "3,083,694"],
-    ["現金_國泰", "", "", "217,433"],
-    ["現金_LINK Bank口袋帳戶", "", "", "500,000"],
-    ["現金_富邦_活期", "", "", "119,684"],
-    ["希_美股_VT", "50", "140.22", "219,451"],
-    ["✅ 資產合計", "", "", "59,678,424"], # 分隔線
+    ["現金_富邦_抵利型現金帳戶", "", "", "6,540,000"], # 您的關鍵備援
+    ["✅ 資產合計", "", "", "62,118,926"],
     ["美金匯率", "1", "31.3", ""],
-    ["富邦房貸（轉貸後）寬限期", "11,540,000", "2.60%", "25,003"],
-    ["富邦分期房貸", "1,960,000", "2.67%", "4,500"],
-    ["富邦信貸整合", "5,000,000", "2.38%", "64,000"],
+    ["富邦房貸", "11,540,000", "2.60%", "25,003"],
     ["股票質押借款", "16,020,000", "2.41%", "32,174"]
 ]
 
-# --- 這裡切換：如果要連 Google Sheets，請把下面註解打開 ---
-# 請在 secrets.json 設定好後使用
+# --- 切換：正式上線請解開這段 ---
 # import gspread
 # from oauth2client.service_account import ServiceAccountCredentials
-# ... (連線代碼同前一次回答) ...
-# sheet = client.open("您的表名").sheet1
-# raw_data_paste = sheet.get_all_values() 
+# scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+# creds_dict = st.secrets["gcp_service_account"]
+# creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+# client = gspread.authorize(creds)
+# sheet = client.open("您的試算表名稱").worksheet("Dashboard_Data") # 請確認分頁名稱
+# raw_data_paste = sheet.get_all_values()
 
 df = parse_my_data(raw_data_paste)
 
 # ==========================================
 # 3. 儀表板顯示邏輯
 # ==========================================
-st.title("💰 資產負債與提領策略 (槓桿管理版)")
-st.markdown("---")
+st.title("🏦 資產配置與現金流戰情室")
 
 if not df.empty:
-    # 數值計算
+    # --- 數據計算 ---
     assets_df = df[df['金額'] > 0]
     liabilities_df = df[df['金額'] < 0]
     
     total_assets = assets_df['金額'].sum()
-    total_liabilities = liabilities_df['金額'].sum() # 負數
+    total_liabilities = liabilities_df['金額'].sum()
     net_worth = total_assets + total_liabilities
     
-    # 槓桿率計算 (Debt Ratio)
-    leverage_ratio = abs(total_liabilities) / total_assets if total_assets > 0 else 0
-
-    # 1. 資產負債總覽
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("總資產", f"${total_assets/10000:,.0f} 萬", delta="Asset")
-    col2.metric("總負債", f"${total_liabilities/10000:,.0f} 萬", delta_color="inverse", delta="Liability")
-    col3.metric("淨資產", f"${net_worth/10000:,.0f} 萬")
-    col4.metric("槓桿比率 (LTV)", f"{leverage_ratio:.1%}", 
-                delta="注意風險" if leverage_ratio > 0.5 else "安全", delta_color="inverse")
-
-    # 2. 圖表分析
-    col_chart1, col_chart2 = st.columns(2)
+    # 提取「備援現金」(抵利型)
+    buffer_cash_df = assets_df[assets_df['備援'] == True]
+    buffer_cash = buffer_cash_df['金額'].sum()
     
-    with col_chart1:
-        st.subheader("資產配置 (類別)")
-        fig_pie = px.pie(assets_df, values='金額', names='類別', hole=0.4, 
-                         color_discrete_map={'台股':'#1f77b4', '美股':'#ff7f0e', '現金':'#2ca02c'})
-        st.plotly_chart(fig_pie, use_container_width=True)
-        
-    with col_chart2:
-        st.subheader("負債結構")
-        # 將負債轉為正數顯示以便畫圖
-        liabilities_df_plot = liabilities_df.copy()
-        liabilities_df_plot['金額'] = liabilities_df_plot['金額'].abs()
-        fig_bar = px.bar(liabilities_df_plot, x='金額', y='項目', orientation='h', text_auto='.2s', color_discrete_sequence=['#d62728'])
-        st.plotly_chart(fig_bar, use_container_width=True)
+    # 一般現金 (排除備援)
+    normal_cash = assets_df[(assets_df['類別'] == '現金') & (assets_df['備援'] == False)]['金額'].sum()
+    
+    # 計算鴻海總股數 (用於股息試算)
+    honhai_df = assets_df[assets_df['項目'].str.contains("鴻海")]
+    total_honhai_shares = honhai_df['股數'].sum()
+
+    # --- 1. 頂部關鍵指標 ---
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("淨資產 (Net Worth)", f"${net_worth/10000:,.0f} 萬")
+    col2.metric("總負債 (Liabilities)", f"${total_liabilities/10000:,.0f} 萬", delta_color="inverse")
+    
+    # 顯示備援現金
+    col3.metric("🛡️ 抵利型備援現金", f"${buffer_cash/10000:,.0f} 萬", 
+                help="這是您的緊急預備金，不計入一般投資組合")
+    
+    # 槓桿率
+    lv_ratio = abs(total_liabilities) / total_assets
+    col4.metric("槓桿比率", f"{lv_ratio:.1%}", delta="偏高" if lv_ratio > 0.5 else "安全", delta_color="inverse")
 
     st.markdown("---")
 
-    # 3. GK 提領與現金流試算
-    st.header("🧮 提領策略 (考慮質押與槓桿)")
+    # --- 2. 股息現金流試算 (新功能) ---
+    st.header("🌊 年度現金流試算 (股息 + 提領)")
     
-    # 計算「淨投資部位」 (Net Investable Assets)
-    # 定義：退休提領的基礎應該是 (股票+現金) - (與投資相關的負債: 質押+信貸)
-    # 房貸通常視為生活開銷的一環，不直接從投資本金扣除，而是算在支出面，但保守起見這裡提供兩種視角
+    # 側邊欄：現金流參數
+    st.sidebar.header("現金流參數")
+    honhai_dps = st.sidebar.slider("預估鴻海股利 (元/股)", 0.0, 10.0, 5.5, 0.5)
+    monthly_expense = st.sidebar.number_input("預估每月生活費 (元)", value=100000, step=5000)
     
-    stock_pledge_loan = liabilities_df[liabilities_df['項目'].str.contains('質押')]['金額'].sum()
-    credit_loan = liabilities_df[liabilities_df['項目'].str.contains('信貸')]['金額'].sum()
-    investment_debt = abs(stock_pledge_loan + credit_loan)
+    annual_expense = monthly_expense * 12
     
-    gross_investable = total_assets # 總資產 (含質押股票)
-    net_investable = total_assets - investment_debt # 扣除質押與信貸後的淨值
+    # 計算預估股息
+    estimated_dividend = total_honhai_shares * honhai_dps
     
-    st.info(
-        f"""
-        **💡 提領基數分析：**
-        *   **總資產 (含質押股)**: ${gross_investable:,.0f} (您目前的總市值)
-        *   **投資型負債 (質押+信貸)**: ${investment_debt:,.0f} (需償還的槓桿成本)
-        *   **👉 建議提領基數 (淨投資部位)**: **${net_investable:,.0f}** (扣除槓桿後的真實本金)
-        """
-    )
+    # 顯示現金流圖表
+    c1, c2 = st.columns([1, 2])
     
-    # GK 參數
-    st.sidebar.header("提領參數")
-    calc_base = st.sidebar.radio("選擇提領計算基數", ["淨投資部位 (保守/推薦)", "總資產 (積極)"])
-    base_amount = net_investable if "淨投資部位" in calc_base else gross_investable
-    
-    iwr = st.sidebar.number_input("初始提領率 (%)", 3.0, 8.0, 4.0, 0.1) / 100
-    inflation = st.sidebar.number_input("通膨率 (%)", 0.0, 10.0, 2.0, 0.1) / 100
-    last_withdraw = st.sidebar.number_input("去年提領金額 (第一年填0)", value=0)
-
-    col_gk1, col_gk2 = st.columns(2)
-    
-    with col_gk1:
-        st.subheader("固定比例提領")
-        fixed_val = base_amount * iwr
-        st.metric("本年度可提領", f"${fixed_val:,.0f}")
-        st.caption(f"每月約: ${fixed_val/12:,.0f}")
-
-    with col_gk2:
-        st.subheader("GK 動態提領建議")
+    with c1:
+        st.subheader("收入來源預估")
+        st.write(f"持有鴻海股數: **{total_honhai_shares:,.0f}** 股")
+        st.metric("預估年度股息", f"${estimated_dividend:,.0f}", delta=f"EPS設為 {honhai_dps}")
         
-        if last_withdraw == 0:
-            gk_val = base_amount * iwr
-            st.success("🎉 第一年：依照初始比例提領")
-        else:
-            # GK 邏輯
-            base_w_inflation = last_withdraw * (1 + inflation)
-            current_wr = base_w_inflation / base_amount
-            
-            ceiling = iwr * 1.2
-            floor = iwr * 0.8
-            
-            if current_wr > ceiling:
-                gk_val = last_withdraw * 0.9
-                st.error(f"⚠️ 觸發減支規則 (提領率 {current_wr:.1%} > {ceiling:.1%})\n\n建議金額減少 10%。")
-            elif current_wr < floor:
-                gk_val = last_withdraw * 1.1
-                st.success(f"🚀 觸發加薪規則 (提領率 {current_wr:.1%} < {floor:.1%})\n\n建議金額增加 10%！")
-            else:
-                gk_val = base_w_inflation
-                st.info(f"✅ 依照通膨調整\n\n提領金額增加 {inflation*100}%。")
+        # 安全氣囊存活時間
+        survival_months = buffer_cash / monthly_expense if monthly_expense > 0 else 0
+        st.info(f"🛡️ **安全氣囊分析**：\n\n您的「抵利型現金」(${buffer_cash/10000:.0f}萬) 可支撐 **{survival_months:.1f} 個月** 的生活費 (完全不賣股的情況下)。")
 
-        st.metric("GK 建議金額", f"${gk_val:,.0f}")
-        st.caption(f"每月約: ${gk_val/12:,.0f}")
+    with c2:
+        st.subheader("GK 提領需求分析")
+        
+        # GK 參數
+        iwr = st.sidebar.number_input("初始提領率 (%)", 3.0, 6.0, 4.0, 0.1) / 100
+        
+        # 淨投資部位 (扣除負債後的淨值 - 備援現金)
+        # 邏輯：備援現金是保命錢，不拿來算 4% 提領；負債要先扣掉
+        net_investable = net_worth - buffer_cash
+        
+        target_withdraw = net_investable * iwr
+        
+        # 缺口計算：目標提領 - 股息 = 實際需要賣出的資產
+        gap = target_withdraw - estimated_dividend
+        
+        # 繪製瀑布圖 (Waterfall Chart) 顯示資金來源
+        fig_waterfall = go.Figure(go.Waterfall(
+            name = "20", orientation = "v",
+            measure = ["relative", "relative", "total", "total"],
+            x = ["預估股息收入", "需賣資產補足", "總提領現金", "年度生活費需求"],
+            textposition = "outside",
+            text = [f"{estimated_dividend/10000:.1f}萬", f"{gap/10000:.1f}萬", f"{target_withdraw/10000:.1f}萬", f"{annual_expense/10000:.1f}萬"],
+            y = [estimated_dividend, gap, target_withdraw, annual_expense],
+            connector = {"line":{"color":"rgb(63, 63, 63)"}},
+        ))
+        
+        fig_waterfall.update_layout(title="資金來源 vs 生活支出", showlegend=False, height=350)
+        st.plotly_chart(fig_waterfall, use_container_width=True)
+        
+        if target_withdraw > annual_expense:
+            st.success(f"🎉 恭喜！依照 {iwr*100}% 提領率，資金充裕 (盈餘 ${target_withdraw - annual_expense:,.0f})")
+        else:
+            st.warning(f"⚠️ 注意：提領上限 (${target_withdraw:,.0f}) 低於生活費需求，需動用備援現金或降低支出。")
+
+    st.markdown("---")
+
+    # --- 3. 資產細節 (保留原本的功能) ---
+    with st.expander("查看資產分佈細節"):
+        st.dataframe(df)
 
 else:
-    st.write("無法解析資料")
+    st.error("無法讀取資料，請檢查 Google Sheets 設定。")
