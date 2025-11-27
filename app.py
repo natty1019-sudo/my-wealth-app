@@ -1,7 +1,10 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go  # <--- 補上這行就能修復錯誤了
 import re
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 # --- 設定頁面 ---
 st.set_page_config(page_title="資產負債與現金流儀表板", layout="wide", page_icon="🏦")
@@ -19,7 +22,7 @@ def parse_my_data(raw_data):
     section = "asset"
     
     for row in raw_data:
-        # 補齊欄位長度
+        # 補齊欄位長度，避免 list index out of range
         row = row + [''] * (5 - len(row))
         item_name = str(row[0]).strip()
         
@@ -82,33 +85,33 @@ def parse_my_data(raw_data):
     return pd.DataFrame(assets + liabilities)
 
 # ==========================================
-# 2. 模擬數據 (若已連線 Google Sheets，請換回 API)
+# 2. 連線 Google Sheets
 # ==========================================
-# 為了展示，這裡包含您新的抵利型帳戶與鴻海股數
-raw_data_paste = [
-    ["鴻海股票（質押中）", "142000", "229.5", "32,589,000"],
-    ["鴻海股票（可動用）", "80000", "229.5", "18,360,000"],
-    ["0050 ETF單筆投資", "20,000", "61.95", "1,239,000"],
-    ["美股_VT", "70", "140.22", "307,232"],
-    ["現金_凱基銀行", "", "", "3,083,694"],
-    ["現金_富邦_抵利型現金帳戶", "", "", "6,540,000"], # 您的關鍵備援
-    ["✅ 資產合計", "", "", "62,118,926"],
-    ["美金匯率", "1", "31.3", ""],
-    ["富邦房貸", "11,540,000", "2.60%", "25,003"],
-    ["股票質押借款", "16,020,000", "2.41%", "32,174"]
-]
+# 請確認您的 secrets.json 已經貼到 Streamlit Cloud 的 Secrets 設定中
+try:
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    
+    # 判斷是在雲端還是本地
+    if "gcp_service_account" in st.secrets:
+        creds_dict = st.secrets["gcp_service_account"]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    else:
+        # 本地測試用
+        creds = ServiceAccountCredentials.from_json_keyfile_name('secrets.json', scope)
+    
+    client = gspread.authorize(creds)
+    
+    # *** 請修改這裡：換成您真正的試算表名稱 ***
+    sheet = client.open("2024資產負債表").sheet1  # 假設您的表名是這個，且資料在第一個分頁
+    # 如果您的表名不同，請修改上面那行引號內的文字
+    
+    raw_data_paste = sheet.get_all_values()
+    df = parse_my_data(raw_data_paste)
 
-# --- 切換：正式上線請解開這段 ---
-# import gspread
-# from oauth2client.service_account import ServiceAccountCredentials
-# scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-# creds_dict = st.secrets["gcp_service_account"]
-# creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-# client = gspread.authorize(creds)
-# sheet = client.open("您的試算表名稱").worksheet("Dashboard_Data") # 請確認分頁名稱
-# raw_data_paste = sheet.get_all_values()
-
-df = parse_my_data(raw_data_paste)
+except Exception as e:
+    st.error(f"連線失敗，請檢查 API 設定或試算表名稱。錯誤訊息: {e}")
+    # 發生錯誤時使用空 DataFrame 避免程式崩潰
+    df = pd.DataFrame()
 
 # ==========================================
 # 3. 儀表板顯示邏輯
@@ -145,7 +148,7 @@ if not df.empty:
                 help="這是您的緊急預備金，不計入一般投資組合")
     
     # 槓桿率
-    lv_ratio = abs(total_liabilities) / total_assets
+    lv_ratio = abs(total_liabilities) / total_assets if total_assets > 0 else 0
     col4.metric("槓桿比率", f"{lv_ratio:.1%}", delta="偏高" if lv_ratio > 0.5 else "安全", delta_color="inverse")
 
     st.markdown("---")
@@ -216,4 +219,4 @@ if not df.empty:
         st.dataframe(df)
 
 else:
-    st.error("無法讀取資料，請檢查 Google Sheets 設定。")
+    st.info("正在等待連線或尚未讀取到資料...")
