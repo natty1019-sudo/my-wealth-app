@@ -75,13 +75,18 @@ try:
     
     # 讀取 Secrets (Streamlit 雲端) 或本地金鑰
     if "gcp_service_account" in st.secrets:
-        creds_dict = st.secrets["gcp_service_account"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    else:
-        # 本地測試用 (若您在自己電腦跑)
-        creds = ServiceAccountCredentials.from_json_keyfile_name('secrets.json', scope)
-    
-    client = gspread.authorize(creds)
+[gcp_service_account]
+type = "service_account"
+project_id = "my-project-new-life-479502"
+private_key_id = "85e67562676648907c7b610ecd9f39a0d37ea539"
+private_key = "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCcjv8raQJceRzw\nLozCTEGKrQzAaKTFPawyzfNizedrylrqSbaP0tjHVEzH0U3gGH2mJ6piuluYnVAu\nTEkWLVcDSpWQEv5RX0Oh9eBYtde0nUk8yNMsgZKEjtiJJx3VhX4+8d0l3I89oICg\n3lsSEm5IeIHrJ2yyi4ASPKMnrnqfrsNnqVNPXDU1QiRt/5UDYUB4iYsolNrkuGiN\niDFT0bmKzndKIpuZwbfTKlm3HkihtZvu1yZbbrAp2vqPmiMJWJo+9ANmGabYcdfN\nWbAxSjhVF0eMWGUeZGUVKl6OSVAxTwYhwLTY1fGlk1Qc0MDJXuBRUm8/5HYFQAC+\n1k2jutEVAgMBAAECggEADcoonp26uANw8ZTgEBMgaMMSTvZIoRjsDHOIfwjs29kw\nhddlTajAMFp0AtukNNtjYdm3j8ejXr9oexN8Eoh+1ArjPpP1s5wk/GSIVLf7nmyG\nMWTs+MwW6DceyoHYBmEiPBAYrweM1FxJSCIdumtGLHr00o4f7GAOMU0G/+1F3r+m\nL9zsIGKw/rg383LTVn3t/ngVl/LZVe/+dRe5qIiQRl7A9VKJciZr9CCRxK1aoW2W\nIOErVzNKBkdzPtYJQAZf0b9I08jCOHx2Dv6TyJkjATg43qjqJ/vNyeTuayRd009j\ncsFryjLRhmO0oldQfMChVvJViSmam8vpia5F/GvTBwKBgQDLf1bMs6zoWjj3w+UM\nHSSridI74l3Gi1biVyrhuJN8xE5Zm1vCV43baaRBVvHc1AeZ/4tUnSRTE/3sXyHu\nQq/N61eHhzPgN6R9e0dGOCirgxp1nNfaHu5AfZxWVvfZffgNhlpzxirVUCeYNt2I\nPEgc3HmJXUEJ+QCqLuQOln17bwKBgQDE820+/ouEOnEHyBIeOlTGOuFwC8+lmVav\nkC8FwVQQsjtn8L6y6UpRmaP9lBPiBfKtoVz46JfJHVZYv4Y9EQDsyLryodOGwYA6\ns8mD7mb+qyDkszhlhzaOxmYghAF7rpAUhJDe7M/57rM+kXJloMvmT4rvQ92YSiJo\nhOl1PJFJuwKBgQCVWRV5EnzZ4i1hGXImm9Tn2DRlItMz/dt8LgEYu//yV5gxB2Ym\nkV9ZIoUcNxU2vp39laDKLrIUDt4S9hbO6D5iYFBS9RVLf0rHlQxQKrMefQ+UNdHt\nETpGNmngq98mzd6Y/nuv8EZLW5JTkiCv9Z3vIJhKChjLmuW0AMn7MtNRHQKBgQDE\nUFRLn1QX6Fz0QbP1l3Ua5mQB2HQQ/8hNVS3Z0bvmrJHUaD7dfPaMYdX5lBlBiWY9\nNgPDQ6zQVcLU0YuP4RwH6YmXAkEjKEuVt9GdBQx6ur8d15rWcLGsHQx9Srdjvjt1\niDITUv93hDv8mOPrcxzrI8w79Gy0OOkVP66pIkc7swKBgHRyLuSpTwiy+jZo/Vog\nO/XkXB4d2wXvC2SI97JSkEb8sCk0S4in/RdYY9dqZaxq186etzNgjPyQ4R1MEDbF\nnXGFN0feJJ/isj3a716sG5q+Z/PPEOhfUFT0yowb7FdCVN9rY65xfq2HWbXzMXWX\ne7cGmbFMB4tv/2ty5/4PKOV+\n-----END PRIVATE KEY-----\n"
+"client_email = "finance-app@my-project-new-life-479502.iam.gserviceaccount.com"
+"client_id = "110145608507445000054"
+"auth_uri = "https://accounts.google.com/o/oauth2/auth"
+"token_uri = "https://oauth2.googleapis.com/token"
+"auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+"client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/finance-app%40my-project-new-life-479502.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
     
     # -----------------------------------------------------------------
     # ⚠️【請修改這裡】⚠️
