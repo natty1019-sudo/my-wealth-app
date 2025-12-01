@@ -9,7 +9,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 st.set_page_config(page_title="資產負債與現金流戰情室", layout="wide", page_icon="🛡️")
 
 # ==========================================
-# 1. 資料處理核心 (邏輯不變：確保讀取所有現金行)
+# 1. 資料處理核心
 # ==========================================
 def parse_my_data(raw_data):
     assets = []
@@ -33,7 +33,7 @@ def parse_my_data(raw_data):
         val_1 = clean_num(row[1])
         val_3 = clean_num(row[3])
 
-        # --- 特殊處理：抵利型現金 (備援) ---
+        # 特殊處理：抵利型現金 (備援)
         if "抵利型" in item_name and "房貸" not in item_name and "現金" in item_name:
             amount = max(val_1, val_3)
             assets.append({"類別": "備援現金", "項目": item_name, "金額": amount, "股數": 0, "備援": True})
@@ -66,14 +66,14 @@ def parse_my_data(raw_data):
 # 2. 資料來源設定
 # ==========================================
 
-# --- 模式 A: 測試數據 (已修正：補齊您的 400多萬現金 + 652萬備援) ---
+# --- 模式 A: 測試數據 ---
 raw_data_paste = [
     ["鴻海股票（質押中）", "142000", "229.5", "32,589,000"],
     ["鴻海股票（可動用）", "80000", "229.5", "18,360,000"],
     ["0050 ETF", "20,000", "61.95", "1,239,000"],
     ["美股資產", "", "", "4,000,000"],
     
-    # 這裡補上您之前提到的多筆現金，加起來約 420 萬
+    # --- 既有現金 (Layer 3) ---
     ["現金_e財庫", "", "", "274,086"],
     ["現金_凱基銀行", "", "", "3,083,694"],
     ["現金_國泰", "", "", "217,433"],
@@ -88,8 +88,9 @@ raw_data_paste = [
     ["❌ 負債合計", "34,520,000", "", ""], 
     ["", "", "", ""],
     
-    # 這是最底下的備援金 652萬
-    ["現金_富邦_抵利型現金帳戶", "", "", "6,520,000"]
+    # --- 備援現金 (Layer 4) ---
+    # 【修改點 1】金額更新為 6,540,000
+    ["現金_富邦_抵利型現金帳戶", "", "", "6,540,000"]
 ]
 
 # --- 模式 B: 正式連線 Google Sheets ---
@@ -121,24 +122,30 @@ if not df.empty:
     assets_df = df[df['金額'] > 0]
     liabilities_df = df[df['金額'] < 0]
     
-    # --- 關鍵數據計算 ---
+    # --- 1. 數據分類計算 ---
+    
+    # Buffer Cash (Layer 4)
     buffer_cash_df = assets_df[assets_df['備援'] == True]
-    buffer_cash = buffer_cash_df['金額'].sum() # 約 652 萬
+    buffer_cash = buffer_cash_df['金額'].sum() 
     
+    # General Assets (包含既有現金 Layer 3 + 股票)
     general_assets_df = assets_df[assets_df['備援'] == False]
-    general_assets = general_assets_df['金額'].sum() # 股票 + 一般現金 (~400多萬)
+    general_assets = general_assets_df['金額'].sum()
     
-    total_assets = general_assets + buffer_cash # 應該要 > 1000 萬
+    # Normal Cash only (Layer 3)
+    normal_cash_df = assets_df[(assets_df['類別'] == '現金') & (assets_df['備援'] == False)]
+    normal_cash = normal_cash_df['金額'].sum()
+    
+    # Total Assets
+    total_assets = general_assets + buffer_cash 
+    
     total_liabilities = liabilities_df['金額'].sum()
     net_worth = total_assets + total_liabilities
     
     honhai_df = assets_df[assets_df['項目'].str.contains("鴻海")]
     total_honhai_shares = honhai_df['股數'].sum()
-    
-    # 計算「一般現金」有多少 (不含備援)
-    normal_cash = general_assets_df[general_assets_df['類別'] == '現金']['金額'].sum()
 
-    # --- 頂部指標區 ---
+    # --- 2. 頂部指標區 ---
     col1, col2, col3, col4 = st.columns(4)
     
     col1.metric("真實總資產", f"${total_assets/10000:,.0f} 萬", 
@@ -149,133 +156,140 @@ if not df.empty:
     col3.metric("淨資產", f"${net_worth/10000:,.0f} 萬")
     
     col4.metric("🛡️ 抵利型備援現金", f"${buffer_cash/10000:,.0f} 萬", 
-                delta="緊急預備金", delta_color="off")
+                delta="Layer 4 最後防線", delta_color="off")
     
-    st.info(f"""
-    **💡 資產結構檢查：**
-    *   **一般活存現金**：${normal_cash/10000:,.0f} 萬 (生活費帳戶)
-    *   **抵利型備援金**：${buffer_cash/10000:,.0f} 萬 (房貸抵扣用)
-    *   **現金總水位**：**${(normal_cash + buffer_cash)/10000:,.0f} 萬**
-    """)
+    st.info(f"💰 **現金水位分析**：既有活存 **${normal_cash/10000:,.0f} 萬** (Layer 3) / 抵利型備援 **${buffer_cash/10000:,.0f} 萬** (Layer 4)")
 
     st.markdown("---")
 
-    # --- 核心功能：GK + 股息 + 備援金 ---
-    st.header("🌊 現金流與提領策略")
+    # --- 3. 核心功能：四層水位資金調度 ---
+    st.header("🌊 現金流與提領策略 (四層水位)")
 
     st.sidebar.header("📊 參數設定")
     
-    # 1. 收入參數
-    st.sidebar.subheader("收入來源")
     honhai_eps = st.sidebar.number_input("鴻海預估配息 (元)", value=7.0, step=0.5)
     iwr = st.sidebar.number_input("GK 初始提領率 (%)", value=4.0, step=0.1) / 100
-    
-    # 2. 支出參數
-    st.sidebar.subheader("支出與通膨")
     inflation_rate = st.sidebar.number_input("預估通膨率 (%)", value=2.0, step=0.1) / 100
     monthly_living = st.sidebar.number_input("純生活費 (月)", value=60000, step=5000)
     monthly_debt = st.sidebar.number_input("負債月付金 (房貸/信貸)", value=125000, step=5000)
     
-    # --- 運算邏輯 (依照您的需求調整) ---
+    # --- 【關鍵修正】資金調度邏輯 ---
     
-    # A. 支出
+    # [支出需求]
     annual_living_cost = monthly_living * 12 * (1 + inflation_rate)
     annual_debt_cost = monthly_debt * 12
     total_expense = annual_living_cost + annual_debt_cost
 
-    # B. 收入 - 股息
+    # [Layer 1] 股息收入
     dividend_income = total_honhai_shares * honhai_eps
     
-    # C. 收入 - 賣股 (GK 建議)
-    # 邏輯：GK 算出的是「總提領金額」。
-    # 需賣股金額 = GK總額 - 股息 (因為股息已經拿到了)
-    # 如果 股息 > GK總額，則不賣股 (賣股=0)
+    # [Layer 2] GK 賣股建議
+    # GK基數 = 一般資產 (不含備援)
+    gk_base = general_assets 
+    gk_total_limit = gk_base * iwr 
+    # 賣股金額 = GK上限 - 股息 (若股息夠就不賣)
+    sell_stock_amount = max(0, gk_total_limit - dividend_income) 
     
-    investment_debt = abs(total_liabilities)
-    gk_base = max(0, general_assets - investment_debt) # GK 基數
-    gk_total_limit = gk_base * iwr # GK 建議的年度總花費上限
+    # 計算第一階段資金 (股息 + 賣股)
+    funds_stage_1 = dividend_income + sell_stock_amount
     
-    sell_stock_amount = max(0, gk_total_limit - dividend_income) # 實際需要賣股票換現金的錢
+    # 計算缺口 1
+    gap_1 = total_expense - funds_stage_1
     
-    # D. 可用總現金 (股息 + 賣股)
-    total_available_cash = dividend_income + sell_stock_amount
+    use_normal_cash = 0
+    use_buffer_cash = 0
     
-    # E. 資金缺口 (由備援金支付)
-    # 缺口 = 總支出 - 可用總現金
-    shortfall = total_expense - total_available_cash
-    buffer_usage = max(0, shortfall)
-    
+    if gap_1 > 0:
+        # [Layer 3] 動用既有現金 (優先)
+        # 如果缺口 < 既有現金，就扣缺口；否則把既有現金扣光
+        use_normal_cash = min(gap_1, normal_cash)
+        
+        # 計算缺口 2
+        gap_2 = gap_1 - use_normal_cash
+        
+        if gap_2 > 0:
+            # [Layer 4] 動用備援現金 (最後)
+            use_buffer_cash = gap_2
+
     # --- 版面顯示 ---
     c1, c2 = st.columns([1, 2])
 
     with c1:
-        st.subheader("📊 收支概況")
-        st.write(f"鴻海股數: **{total_honhai_shares:,.0f}** 股")
-        st.metric("1. 股息收入", f"${dividend_income:,.0f}", delta="第一層水源")
-        st.metric("2. GK 補充提領 (賣股)", f"${sell_stock_amount:,.0f}", delta="第二層水源")
-        st.metric("3. 總支出需求", f"${total_expense:,.0f}", delta_color="inverse")
+        st.subheader("📊 資金調度順序")
         
-        st.markdown("---")
-        if buffer_usage > 0:
-            st.error(f"⚠️ **現金流不足**")
-            st.metric("需動用備援金", f"${buffer_usage:,.0f}", delta="第三層水源")
-            survival_years = buffer_cash / buffer_usage
-            st.write(f"抵利型帳戶可支撐： **{survival_years:.1f} 年**")
+        st.metric("1. 股息收入", f"${dividend_income:,.0f}", delta="Layer 1")
+        st.metric("2. GK 賣股", f"${sell_stock_amount:,.0f}", delta="Layer 2")
+        
+        if use_normal_cash > 0:
+            st.metric("3. 動用既有現金", f"${use_normal_cash:,.0f}", delta="Layer 3 (優先)", delta_color="inverse")
         else:
-            surplus = total_available_cash - total_expense
-            st.success(f"🎉 **現金流充裕**")
-            st.metric("年度結餘", f"${surplus:,.0f}")
+            st.write("3. 動用既有現金: $0 (充足)")
+            
+        if use_buffer_cash > 0:
+            st.metric("4. 動用抵利型備援", f"${use_buffer_cash:,.0f}", delta="Layer 4 (最後)", delta_color="inverse")
+            st.error("⚠️ 需動用最後防線")
+        else:
+            st.write("4. 動用抵利型備援: $0 (安全)")
+            
+        st.markdown("---")
+        
+        # 結餘計算
+        total_income = funds_stage_1 + use_normal_cash + use_buffer_cash
+        final_balance = total_income - total_expense
+        st.metric("總支出需求", f"${total_expense:,.0f}", delta_color="inverse")
 
     with c2:
         st.subheader("🌊 資金瀑布圖 (Waterfall)")
         
-        # 繪製邏輯：
-        # 收入(綠) -> 賣股(綠) -> 支出(紅) -> 缺口(藍/備援)
+        # 瀑布圖動態構建
+        measure_list = ["relative", "relative"]
+        x_list = ["1.股息", "2.賣股(GK)"]
+        y_list = [dividend_income, sell_stock_amount]
+        text_list = [f"+{dividend_income/10000:.0f}萬", f"+{sell_stock_amount/10000:.0f}萬"]
+        
+        # 只有當需要動用 Layer 3 時才畫出來
+        if use_normal_cash > 0:
+            measure_list.append("relative")
+            x_list.append("3.既有現金")
+            y_list.append(use_normal_cash)
+            text_list.append(f"+{use_normal_cash/10000:.0f}萬")
+            
+        # 只有當需要動用 Layer 4 時才畫出來
+        if use_buffer_cash > 0:
+            measure_list.append("relative")
+            x_list.append("4.備援現金")
+            y_list.append(use_buffer_cash)
+            text_list.append(f"+{use_buffer_cash/10000:.0f}萬")
+            
+        # 加上支出與結餘
+        measure_list.extend(["total", "relative", "relative", "total"])
+        x_list.extend(["可用資金小計", "生活費(含通膨)", "還債", "最終結餘"])
+        
+        y_list.extend([0, -annual_living_cost, -annual_debt_cost, 0])
+        
+        # 計算小計顯示值
+        subtotal = dividend_income + sell_stock_amount + use_normal_cash + use_buffer_cash
+        
+        text_list.extend([
+            f"={subtotal/10000:.0f}萬",
+            f"-{annual_living_cost/10000:.0f}萬",
+            f"-{annual_debt_cost/10000:.0f}萬",
+            f"{final_balance/10000:.0f}萬"
+        ])
         
         fig = go.Figure(go.Waterfall(
             name = "Cashflow", orientation = "v",
-            measure = [
-                "relative",   # 股息
-                "relative",   # 賣股
-                "total",      # 小計：手上現金
-                "relative",   # 扣生活費
-                "relative",   # 扣房貸
-                "total"       # 結果：缺口(需動用備援)
-            ],
-            x = [
-                "1. 股息收入", 
-                "2. 賣股補足(GK)", 
-                "可用現金小計", 
-                "3. 生活費(含通膨)", 
-                "4. 負債償還", 
-                "資金缺口 (需動用備援)"
-            ],
+            measure = measure_list,
+            x = x_list,
             textposition = "outside",
-            text = [
-                f"+{dividend_income/10000:.0f}萬", 
-                f"+{sell_stock_amount/10000:.0f}萬", 
-                f"={total_available_cash/10000:.0f}萬", 
-                f"-{annual_living_cost/10000:.0f}萬",
-                f"-{annual_debt_cost/10000:.0f}萬",
-                f"-{buffer_usage/10000:.0f}萬" if buffer_usage > 0 else "0"
-            ],
-            y = [
-                dividend_income, 
-                sell_stock_amount, 
-                0, # total row, auto calc
-                -annual_living_cost, 
-                -annual_debt_cost, 
-                0  # total row
-            ],
+            text = text_list,
+            y = y_list,
             connector = {"line":{"color":"rgb(63, 63, 63)"}},
-            decreasing = {"marker":{"color":"#EF553B"}}, # 紅色 (支出)
-            increasing = {"marker":{"color":"#00CC96"}}, # 綠色 (收入)
-            totals = {"marker":{"color":"#1f77b4"}}      # 藍色 (總計/缺口)
+            decreasing = {"marker":{"color":"#EF553B"}}, 
+            increasing = {"marker":{"color":"#00CC96"}}, 
+            totals = {"marker":{"color":"#1f77b4"}}
         ))
         st.plotly_chart(fig, use_container_width=True)
-        
-        if buffer_usage > 0:
-            st.warning("💡 圖表最右側的藍色柱子代表 **「不夠的錢」**，這筆錢將由您的**抵利型備援現金**自動填補。")
 
     # --- 資產圖表 ---
     st.markdown("---")
