@@ -9,7 +9,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 st.set_page_config(page_title="資產負債與現金流戰情室", layout="wide", page_icon="🛡️")
 
 # ==========================================
-# 1. 資料處理核心
+# 1. 資料處理核心 (正式版邏輯)
 # ==========================================
 def parse_my_data(raw_data):
     assets = []
@@ -17,9 +17,11 @@ def parse_my_data(raw_data):
     section = "asset" 
     
     for row in raw_data:
+        # 補齊欄位長度防呆
         row = row + [''] * (5 - len(row))
         item_name = str(row[0]).strip()
         
+        # 排除無效行與表格原本的合計行
         if not item_name or item_name in ["項目", ""]: continue
         if "合計" in item_name: continue
         if "淨值" in item_name: continue
@@ -33,15 +35,17 @@ def parse_my_data(raw_data):
         val_1 = clean_num(row[1])
         val_3 = clean_num(row[3])
 
-        # 特殊處理：抵利型現金 (備援)
+        # 特殊處理：抵利型現金 (備援) - 強制歸類為資產
         if "抵利型" in item_name and "房貸" not in item_name and "現金" in item_name:
             amount = max(val_1, val_3)
             assets.append({"類別": "備援現金", "項目": item_name, "金額": amount, "股數": 0, "備援": True})
             continue
 
+        # 區塊切換判斷
         if ("房貸" in item_name or "信貸" in item_name or "借款" in item_name) and "抵利型" not in item_name:
             section = "liability"
         
+        # 資產區塊處理
         if section == "asset":
             amount = val_3 if val_3 > 0 else val_1
             shares = val_1 if val_3 > 0 else 0
@@ -55,6 +59,7 @@ def parse_my_data(raw_data):
                 "類別": category, "項目": item_name, "金額": amount, "股數": shares, "備援": False
             })
 
+        # 負債區塊處理
         elif section == "liability":
             amount = val_1
             if amount > 0:
@@ -63,55 +68,35 @@ def parse_my_data(raw_data):
     return pd.DataFrame(assets + liabilities)
 
 # ==========================================
-# 2. 資料來源設定
+# 2. 正式連線 Google Sheets
 # ==========================================
-
-# --- 模式 A: 測試數據 ---
-raw_data_paste = [
-    ["鴻海股票（質押中）", "142000", "229.5", "32,589,000"],
-    ["鴻海股票（可動用）", "80000", "229.5", "18,360,000"],
-    ["0050 ETF", "20,000", "61.95", "1,239,000"],
-    ["美股資產", "", "", "4,000,000"],
+try:
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     
-    # --- 既有現金 (Layer 3) ---
-    ["現金_e財庫", "", "", "274,086"],
-    ["現金_凱基銀行", "", "", "3,083,694"],
-    ["現金_國泰", "", "", "217,433"],
-    ["現金_LINK Bank口袋帳戶", "", "", "500,000"],
-    ["現金_富邦_活期", "", "", "119,684"],
+    # 讀取 Secrets
+    if "gcp_service_account" in st.secrets:
+        creds_dict = st.secrets["gcp_service_account"]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    else:
+        # 本地開發用 (若無則會報錯)
+        creds = ServiceAccountCredentials.from_json_keyfile_name('secrets.json', scope)
     
-    ["✅ 資產合計", "", "", "xxxx"], 
-    ["", "", "", ""],
-    ["富邦房貸", "11,540,000", "2.60%", ""],
-    ["股票質押借款", "16,020,000", "2.41%", ""],
-    ["其他信貸", "6,960,000", "", ""], 
-    ["❌ 負債合計", "34,520,000", "", ""], 
-    ["", "", "", ""],
+    client = gspread.authorize(creds)
     
-    # --- 備援現金 (Layer 4) ---
-    # 【修改點 1】金額更新為 6,540,000
-    ["現金_富邦_抵利型現金帳戶", "", "", "6,540,000"]
-]
+    # -----------------------------------------------------------
+    # ⚠️ 請最後確認一次：您的 Google Sheet 名稱是否正確？
+    # -----------------------------------------------------------
+    sheet_name = "2024資產負債表" 
+    
+    sheet = client.open(sheet_name).sheet1 
+    raw_data = sheet.get_all_values()
+    
+    # 解析真實數據
+    df = parse_my_data(raw_data)
 
-# --- 模式 B: 正式連線 Google Sheets ---
-# ⚠️ 確認數字無誤後，請刪除上面的 raw_data_paste，並解開下面註解
-# -------------------------------------------------------
-# try:
-#     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-#     if "gcp_service_account" in st.secrets:
-#         creds_dict = st.secrets["gcp_service_account"]
-#         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-#     else:
-#         creds = ServiceAccountCredentials.from_json_keyfile_name('secrets.json', scope)
-#     client = gspread.authorize(creds)
-#     sheet = client.open("2024資產負債表").sheet1 
-#     raw_data_paste = sheet.get_all_values()
-# except Exception as e:
-#     st.error(f"連線失敗: {e}")
-#     raw_data_paste = []
-# -------------------------------------------------------
-
-df = parse_my_data(raw_data_paste)
+except Exception as e:
+    st.error(f"連線錯誤！請檢查 Secrets 設定或試算表名稱。錯誤訊息: {e}")
+    df = pd.DataFrame() # 避免崩潰
 
 # ==========================================
 # 3. 儀表板顯示邏輯
@@ -163,17 +148,20 @@ if not df.empty:
     st.markdown("---")
 
     # --- 3. 核心功能：四層水位資金調度 ---
-    st.header("🌊 現金流與提領策略 (四層水位)")
+    st.header("🌊 現金流與提領策略")
 
     st.sidebar.header("📊 參數設定")
     
+    # 收入參數
     honhai_eps = st.sidebar.number_input("鴻海預估配息 (元)", value=7.0, step=0.5)
     iwr = st.sidebar.number_input("GK 初始提領率 (%)", value=4.0, step=0.1) / 100
+    
+    # 支出參數
     inflation_rate = st.sidebar.number_input("預估通膨率 (%)", value=2.0, step=0.1) / 100
     monthly_living = st.sidebar.number_input("純生活費 (月)", value=60000, step=5000)
     monthly_debt = st.sidebar.number_input("負債月付金 (房貸/信貸)", value=125000, step=5000)
     
-    # --- 【關鍵修正】資金調度邏輯 ---
+    # --- 運算邏輯 ---
     
     # [支出需求]
     annual_living_cost = monthly_living * 12 * (1 + inflation_rate)
@@ -183,14 +171,13 @@ if not df.empty:
     # [Layer 1] 股息收入
     dividend_income = total_honhai_shares * honhai_eps
     
-    # [Layer 2] GK 賣股建議
-    # GK基數 = 一般資產 (不含備援)
+    # [Layer 2] GK 賣股建議 (基數 = 一般投資總資產)
     gk_base = general_assets 
     gk_total_limit = gk_base * iwr 
-    # 賣股金額 = GK上限 - 股息 (若股息夠就不賣)
+    # 賣股金額 = GK上限 - 股息
     sell_stock_amount = max(0, gk_total_limit - dividend_income) 
     
-    # 計算第一階段資金 (股息 + 賣股)
+    # 第一階段資金 (股息 + 賣股)
     funds_stage_1 = dividend_income + sell_stock_amount
     
     # 計算缺口 1
@@ -201,7 +188,6 @@ if not df.empty:
     
     if gap_1 > 0:
         # [Layer 3] 動用既有現金 (優先)
-        # 如果缺口 < 既有現金，就扣缺口；否則把既有現金扣光
         use_normal_cash = min(gap_1, normal_cash)
         
         # 計算缺口 2
@@ -247,27 +233,24 @@ if not df.empty:
         y_list = [dividend_income, sell_stock_amount]
         text_list = [f"+{dividend_income/10000:.0f}萬", f"+{sell_stock_amount/10000:.0f}萬"]
         
-        # 只有當需要動用 Layer 3 時才畫出來
+        # 動態顯示 Layer 3 & 4
         if use_normal_cash > 0:
             measure_list.append("relative")
             x_list.append("3.既有現金")
             y_list.append(use_normal_cash)
             text_list.append(f"+{use_normal_cash/10000:.0f}萬")
             
-        # 只有當需要動用 Layer 4 時才畫出來
         if use_buffer_cash > 0:
             measure_list.append("relative")
             x_list.append("4.備援現金")
             y_list.append(use_buffer_cash)
             text_list.append(f"+{use_buffer_cash/10000:.0f}萬")
             
-        # 加上支出與結餘
         measure_list.extend(["total", "relative", "relative", "total"])
         x_list.extend(["可用資金小計", "生活費(含通膨)", "還債", "最終結餘"])
         
         y_list.extend([0, -annual_living_cost, -annual_debt_cost, 0])
         
-        # 計算小計顯示值
         subtotal = dividend_income + sell_stock_amount + use_normal_cash + use_buffer_cash
         
         text_list.extend([
@@ -303,4 +286,4 @@ if not df.empty:
         st.dataframe(df, height=300)
 
 else:
-    st.write("資料讀取中... 若無顯示請檢查連線。")
+    st.info("正在連線 Google Sheets，請稍候...")
