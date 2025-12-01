@@ -86,7 +86,7 @@ try:
     # -----------------------------------------------------------
     # ⚠️ 請確認您的 Google Sheet 名稱
     # -----------------------------------------------------------
-    sheet_name = "2024資產負債表" 
+    sheet_name = "@最新_家用收支入管理表_google程式用" 
     
     sheet = client.open(sheet_name).sheet1 
     raw_data = sheet.get_all_values()
