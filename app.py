@@ -3,34 +3,10 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials # <--- 換成新套件
 
 # --- 設定頁面 ---
 st.set_page_config(page_title="資產負債與現金流戰情室", layout="wide", page_icon="🛡️")
-
-# ==========================================
-# 0. 快取管理與連線函式 (新功能：加快速度 + 手動更新)
-# ==========================================
-# 設定 ttl=600 代表資料會暫存 10 分鐘，避免一直狂連 Google 被鎖
-# 但透過按鈕可以強制清除快取
-@st.cache_data(ttl=600)
-def fetch_google_sheet_data():
-    try:
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        
-        if "gcp_service_account" in st.secrets:
-            creds_dict = st.secrets["gcp_service_account"]
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        else:
-            creds = ServiceAccountCredentials.from_json_keyfile_name('secrets.json', scope)
-        
-        client = gspread.authorize(creds)
-        # ⚠️ 請確認檔名正確
-        sheet_name = "@最新_家用收支入管理表_google程式用" 
-        sheet = client.open(sheet_name).sheet1 
-        return sheet.get_all_values()
-    except Exception as e:
-        return str(e) # 回傳錯誤訊息
 
 # ==========================================
 # 1. 資料處理核心
@@ -41,9 +17,11 @@ def parse_my_data(raw_data):
     section = "asset" 
     
     for row in raw_data:
+        # 補齊欄位長度
         row = row + [''] * (5 - len(row))
         item_name = str(row[0]).strip()
         
+        # 排除無效行與合計行
         if not item_name or item_name in ["項目", ""]: continue
         if "合計" in item_name: continue
         if "淨值" in item_name: continue
@@ -63,9 +41,11 @@ def parse_my_data(raw_data):
             assets.append({"類別": "備援現金", "項目": item_name, "金額": amount, "股數": 0, "備援": True})
             continue
 
+        # 區塊切換判斷
         if ("房貸" in item_name or "信貸" in item_name or "借款" in item_name) and "抵利型" not in item_name:
             section = "liability"
         
+        # 資產區塊處理
         if section == "asset":
             amount = val_3 if val_3 > 0 else val_1
             shares = val_1 if val_3 > 0 else 0
@@ -79,6 +59,7 @@ def parse_my_data(raw_data):
                 "類別": category, "項目": item_name, "金額": amount, "股數": shares, "備援": False
             })
 
+        # 負債區塊處理
         elif section == "liability":
             amount = val_1
             if amount > 0:
@@ -87,45 +68,82 @@ def parse_my_data(raw_data):
     return pd.DataFrame(assets + liabilities)
 
 # ==========================================
-# 2. 主程式邏輯
+# 2. 新版穩定連線 (使用 google-auth)
 # ==========================================
+# 增加快取機制，避免頻繁連線錯誤
+@st.cache_data(ttl=600)
+def load_google_sheet_data():
+    try:
+        # 定義權限範圍
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+        
+        # 判斷是在雲端還是在本地
+        if "gcp_service_account" in st.secrets:
+            # 雲端模式：直接從 Secrets 讀取字典
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            
+            # 修正 private_key 的換行問題 (這是最常見的錯誤點)
+            if "private_key" in creds_dict:
+                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
-# --- 側邊欄：更新按鈕 ---
-st.sidebar.header("⚙️ 系統功能")
-if st.sidebar.button("🔄 更新最新數據 (Clear Cache)"):
-    st.cache_data.clear() # 清除快取
-    st.rerun() # 重新執行程式
-
-# --- 讀取資料 ---
-raw_data_or_error = fetch_google_sheet_data()
-
-if isinstance(raw_data_or_error, str):
-    # 如果回傳的是字串，代表出錯了
-    st.error(f"連線錯誤！請檢查 Secrets 或檔名。錯誤訊息: {raw_data_or_error}")
-    df = pd.DataFrame()
-else:
-    # 成功讀取
-    df = parse_my_data(raw_data_or_error)
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        else:
+            # 本地模式
+            creds = Credentials.from_service_account_file('secrets.json', scopes=scopes)
+        
+        client = gspread.authorize(creds)
+        
+        # ⚠️ 請確認檔名
+        sheet_name = "@最新_家用收支入管理表_google程式用"
+        sheet = client.open(sheet_name).sheet1
+        return sheet.get_all_values()
+        
+    except Exception as e:
+        return str(e) # 回傳錯誤訊息
 
 # ==========================================
-# 3. 儀表板顯示
+# 3. 儀表板顯示邏輯
 # ==========================================
 st.title("🛡️ 資產配置與現金流戰情室")
+
+# 更新按鈕
+if st.sidebar.button("🔄 更新最新數據 (Clear Cache)"):
+    st.cache_data.clear()
+    st.rerun()
+
+# 載入資料
+raw_data_or_error = load_google_sheet_data()
+
+# 檢查是否連線失敗
+if isinstance(raw_data_or_error, str):
+    st.error(f"連線失敗！請檢查 Secrets 設定。錯誤詳情：{raw_data_or_error}")
+    # 為了不讓畫面全白，建立一個空表格
+    df = pd.DataFrame()
+else:
+    df = parse_my_data(raw_data_or_error)
 
 if not df.empty:
     assets_df = df[df['金額'] > 0]
     liabilities_df = df[df['金額'] < 0]
     
-    # 數據計算
+    # --- 1. 數據分類計算 ---
+    
+    # Buffer Cash (Layer 4)
     buffer_cash_df = assets_df[assets_df['備援'] == True]
     buffer_cash = buffer_cash_df['金額'].sum() 
     
+    # General Assets (包含既有現金 Layer 3 + 股票)
     general_assets_df = assets_df[assets_df['備援'] == False]
     general_assets = general_assets_df['金額'].sum()
     
+    # Normal Cash only (Layer 3)
     normal_cash_df = assets_df[(assets_df['類別'] == '現金') & (assets_df['備援'] == False)]
     normal_cash = normal_cash_df['金額'].sum()
     
+    # Total Assets
     total_assets = general_assets + buffer_cash 
     
     total_liabilities = liabilities_df['金額'].sum()
@@ -134,28 +152,35 @@ if not df.empty:
     honhai_df = assets_df[assets_df['項目'].str.contains("鴻海")]
     total_honhai_shares = honhai_df['股數'].sum()
 
-    # 指標區
+    # --- 2. 頂部指標區 ---
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("真實總資產", f"${total_assets/10000:,.0f} 萬", help=f"一般: {general_assets/10000:.0f}萬 + 備援: {buffer_cash/10000:.0f}萬")
-    col2.metric("總負債", f"${total_liabilities/10000:,.0f} 萬", delta_color="inverse")
-    col3.metric("淨資產", f"${net_worth/10000:,.0f} 萬")
-    col4.metric("🛡️ 抵利型備援現金", f"${buffer_cash/10000:,.0f} 萬", delta="Layer 4", delta_color="off")
     
-    st.info(f"💰 **現金水位**：既有活存 **${normal_cash/10000:,.0f} 萬** (Layer 3) / 抵利型備援 **${buffer_cash/10000:,.0f} 萬** (Layer 4)")
+    col1.metric("真實總資產", f"${total_assets/10000:,.0f} 萬", 
+                help=f"一般資產 {general_assets/10000:.0f}萬 + 備援現金 {buffer_cash/10000:.0f}萬")
+    
+    col2.metric("總負債", f"${total_liabilities/10000:,.0f} 萬", delta_color="inverse")
+    
+    col3.metric("淨資產", f"${net_worth/10000:,.0f} 萬")
+    
+    col4.metric("🛡️ 抵利型備援現金", f"${buffer_cash/10000:,.0f} 萬", 
+                delta="Layer 4 最後防線", delta_color="off")
+    
+    st.info(f"💰 **現金水位分析**：既有活存 **${normal_cash/10000:,.0f} 萬** (Layer 3) / 抵利型備援 **${buffer_cash/10000:,.0f} 萬** (Layer 4)")
 
     st.markdown("---")
 
-    # 核心功能區
+    # --- 3. 核心功能 ---
     st.header("🌊 現金流與提領策略")
 
     st.sidebar.header("📊 參數設定")
+    
     honhai_eps = st.sidebar.number_input("鴻海預估配息 (元)", value=7.0, step=0.5)
     iwr = st.sidebar.number_input("GK 初始提領率 (%)", value=4.0, step=0.1) / 100
     inflation_rate = st.sidebar.number_input("預估通膨率 (%)", value=2.0, step=0.1) / 100
     monthly_living = st.sidebar.number_input("純生活費 (月)", value=60000, step=5000)
     monthly_debt = st.sidebar.number_input("負債月付金 (房貸/信貸)", value=125000, step=5000)
     
-    # 計算邏輯
+    # --- 運算邏輯 ---
     annual_living_cost = monthly_living * 12 * (1 + inflation_rate)
     annual_debt_cost = monthly_debt * 12
     total_expense = annual_living_cost + annual_debt_cost
@@ -178,29 +203,32 @@ if not df.empty:
         if gap_2 > 0:
             use_buffer_cash = gap_2
 
-    # 版面顯示
+    # --- 版面顯示 ---
     c1, c2 = st.columns([1, 2])
 
     with c1:
-        st.subheader("📊 收支概況")
-        st.write(f"鴻海股數: **{total_honhai_shares:,.0f}** 股")
+        st.subheader("📊 資金調度順序")
         st.metric("1. 股息收入", f"${dividend_income:,.0f}", delta="Layer 1")
         st.metric("2. GK 賣股", f"${sell_stock_amount:,.0f}", delta="Layer 2")
-        st.metric("3. 總支出需求", f"${total_expense:,.0f}", delta_color="inverse")
         
-        st.markdown("---")
-        if use_buffer_cash > 0:
-            st.error(f"⚠️ **需動用備援金**")
-            st.metric("提領金額", f"${use_buffer_cash:,.0f}", delta="Layer 4")
-            survival_years = buffer_cash / use_buffer_cash if use_buffer_cash > 0 else 99
-            st.write(f"抵利型帳戶可支撐： **{survival_years:.1f} 年**")
+        if use_normal_cash > 0:
+            st.metric("3. 動用既有現金", f"${use_normal_cash:,.0f}", delta="Layer 3 (優先)", delta_color="inverse")
         else:
-            surplus = (funds_stage_1 + use_normal_cash) - total_expense
-            st.success(f"🎉 **現金流充裕**")
-            st.metric("年度結餘", f"${surplus:,.0f}")
+            st.write("3. 動用既有現金: $0 (充足)")
+            
+        if use_buffer_cash > 0:
+            st.metric("4. 動用抵利型備援", f"${use_buffer_cash:,.0f}", delta="Layer 4 (最後)", delta_color="inverse")
+            st.error("⚠️ 需動用最後防線")
+        else:
+            st.write("4. 動用抵利型備援: $0 (安全)")
+            
+        st.markdown("---")
+        total_income = funds_stage_1 + use_normal_cash + use_buffer_cash
+        final_balance = total_income - total_expense
+        st.metric("總支出需求", f"${total_expense:,.0f}", delta_color="inverse")
 
     with c2:
-        st.subheader("🌊 資金瀑布圖")
+        st.subheader("🌊 資金瀑布圖 (Waterfall)")
         
         measure_list = ["relative", "relative"]
         x_list = ["1.股息", "2.賣股(GK)"]
@@ -224,12 +252,7 @@ if not df.empty:
         
         subtotal = dividend_income + sell_stock_amount + use_normal_cash + use_buffer_cash
         
-        # 支出轉負數
         y_list.extend([0, -annual_living_cost, -annual_debt_cost, 0])
-        
-        # 最終結餘 (從 0 開始算，還是從 subtotal 往下扣)
-        final_balance = subtotal - annual_living_cost - annual_debt_cost
-        
         text_list.extend([
             f"={subtotal/10000:.0f}萬",
             f"-{annual_living_cost/10000:.0f}萬",
@@ -251,6 +274,7 @@ if not df.empty:
         ))
         st.plotly_chart(fig, use_container_width=True)
 
+    # --- 資產圖表 ---
     st.markdown("---")
     col_chart1, col_chart2 = st.columns(2)
     with col_chart1:
@@ -262,4 +286,4 @@ if not df.empty:
         st.dataframe(df, height=300)
 
 else:
-    st.info("連線中... 如果很久沒反應，請按左側「更新最新數據」按鈕。")
+    st.info("請確認 Secrets 設定是否正確...")
